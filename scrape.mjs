@@ -68,16 +68,21 @@ const CONFIG = {
   delayBetweenAiCallsMs: 3500,
 };
 
-// Target Job Sources (Togo & Regional)
-const SOURCES = [
+// Default Job Sources (Fallback if API unavailable)
+const DEFAULT_SOURCES = [
   {
     name: "Jobrelais Togo",
     url: "https://www.jobrelais.com/opportunities/jobs",
     type: "html",
   },
   {
-    name: "Emploi Togo",
+    name: "Emploi Togo Info",
     url: "https://www.emploitogo.info/offres-emploi/",
+    type: "html",
+  },
+  {
+    name: "Emploi Togo (.com)",
+    url: "https://emploitogo.com/listes-des-emplois/",
     type: "html",
   },
   {
@@ -86,6 +91,41 @@ const SOURCES = [
     type: "html",
   },
 ];
+
+// Helper: Dynamically fetch active sources configured in Soly Back-Office
+async function loadTargetSources() {
+  if (CONFIG.appUrl) {
+    try {
+      const endpoint = `${CONFIG.appUrl}/api/v1/jobs/sources?key=${encodeURIComponent(CONFIG.scraperSecret)}`;
+      const res = await fetch(endpoint, {
+        headers: {
+          "x-scraper-secret": CONFIG.scraperSecret,
+          Authorization: `Bearer ${CONFIG.scraperSecret}`,
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.sources) && data.sources.length > 0) {
+          console.log(
+            `[Sources] 🔗 Dynamically synchronized ${data.sources.length} active sources from Soly Back-Office.`
+          );
+          return data.sources.map((s) => ({
+            name: s.name,
+            url: s.url,
+            type: "html",
+          }));
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[Sources] ⚠️ Could not fetch dynamic sources from ${CONFIG.appUrl} (${err.message}). Using fallback sources.`
+      );
+    }
+  }
+  return DEFAULT_SOURCES;
+}
 
 const JSON_PREFIX_REGEX = /^```json\s*/i;
 const JSON_SUFFIX_REGEX = /\s*```$/i;
@@ -140,21 +180,36 @@ function isStrictJobUrl(rawUrl, baseUrl) {
 
     // 1. Jobrelais Togo
     if (host.includes("jobrelais.com")) {
-      // STRICT: Must be /opportunities/(jobs|internship|call-for-tenders|competitions)/[hexId]-[slug]
       return JOBRELAIS_JOB_REGEX.test(path);
     }
 
-    // 2. Emploi Togo
+    // 2. Emploi Togo Info
     if (host.includes("emploitogo.info")) {
-      // Must not be listing root, taxonomies, feeds, or standard static pages
       if (path === "/" || EMPLOITOGO_EXCLUSION_REGEX.test(path)) {
         return false;
       }
-      // Must match job slug keywords or date suffix
       return EMPLOITOGO_JOB_REGEX.test(path);
     }
 
-    // 3. ANPE Togo
+    // 3. Emploi Togo (.com)
+    if (host.includes("emploitogo.com")) {
+      if (
+        path === "/" ||
+        path === "/listes-des-emplois" ||
+        path === "/listes-des-emplois/"
+      ) {
+        return false;
+      }
+      return (
+        path.length > 5 &&
+        (path.includes("/emploi") ||
+          path.includes("/job") ||
+          path.includes("/offres") ||
+          /-[a-z0-9]+/i.test(path))
+      );
+    }
+
+    // 4. ANPE Togo
     if (host.includes("anpetogo.org")) {
       if (
         path === "/" ||
@@ -163,10 +218,38 @@ function isStrictJobUrl(rawUrl, baseUrl) {
       ) {
         return false;
       }
-      return ANPE_JOB_REGEX_1.test(path) || ANPE_JOB_REGEX_2.test(path);
+      return (
+        ANPE_JOB_REGEX_1.test(path) ||
+        ANPE_JOB_REGEX_2.test(path) ||
+        path.includes("/offres/")
+      );
     }
 
-    return false;
+    // 5. Emploi TG
+    if (host.includes("emploi.tg")) {
+      if (path === "/" || path.includes("/recherche-jobs")) {
+        return false;
+      }
+      return (
+        path.includes("/offre-emploi-") ||
+        path.includes("/job-offer-") ||
+        path.includes("/recrutement")
+      );
+    }
+
+    // 6. Generic / Custom sources added via Soly Dashboard
+    const genericExclusions =
+      /\.(jpg|jpeg|png|gif|svg|css|js|woff|pdf|rss|xml)$/i;
+    if (genericExclusions.test(path)) {
+      return false;
+    }
+    const genericBadPaths =
+      /^\/(login|connexion|register|inscription|contact|a-propos|about|mentions-legales|politique|terms|tag|category|author|feed|page)\/?/i;
+    if (genericBadPaths.test(path) || path === "/" || path === "") {
+      return false;
+    }
+
+    return path.split("/").filter(Boolean).length >= 1;
   } catch {
     return false;
   }
@@ -869,7 +952,9 @@ async function main() {
   let totalDuplicates = 0;
   const errors = [];
 
-  for (const source of SOURCES) {
+  const activeSources = await loadTargetSources();
+
+  for (const source of activeSources) {
     console.log(`\n--- Scanning Source: ${source.name} ---`);
     const pageContent = await fetchPageText(source.url);
     if (!pageContent) {
