@@ -735,22 +735,70 @@ function cleanJobDescription(rawDescription) {
   let result = filteredLines.join("\n").trim();
 
   result = result
-    .replace(/^(?:#+\s*)?Description\s*:\s*/gim, "## Description du poste\n\n")
+    // Cas 1 : Titres seuls sur une ligne (avec ou sans deux-points, avec ou sans dièses existants)
     .replace(
-      /^(?:#+\s*)?Missions?\s*(?:principales?|du poste)?\s*:\s*/gim,
-      "## Missions principales\n\n"
+      /^(\s*)(?:#+\s*)?Missions?\s*(?:principales?|du poste)?\s*:?\s*$/gim,
+      "\n\n## Missions principales\n\n"
     )
     .replace(
-      /^(?:#+\s*)?Profil\s*(?:recherch[ée]|du candidat)?\s*:\s*/gim,
-      "## Profil recherché\n\n"
+      /^(\s*)(?:#+\s*)?Profil\s*(?:recherch[ée]|du candidat|exig[ée])?\s*:?\s*$/gim,
+      "\n\n## Profil recherché\n\n"
     )
     .replace(
-      /^(?:#+\s*)?Conditions?\s*(?:d['’]embauche|du contrat|de travail)?\s*:\s*/gim,
-      "## Conditions de travail\n\n"
+      /^(\s*)(?:#+\s*)?Description\s*(?:du poste|de l['’]offre)?\s*:?\s*$/gim,
+      "\n\n## Description du poste\n\n"
     )
     .replace(
-      /^(?:#+\s*)?(?:Comment postuler|Modalit[ée]s de candidature|Dossier de candidature)\s*:\s*/gim,
-      "## Modalités de candidature\n\n"
+      /^(\s*)(?:#+\s*)?Conditions?\s*(?:d['’]embauche|du contrat|de travail)?\s*:?\s*$/gim,
+      "\n\n## Conditions de travail\n\n"
+    )
+    .replace(
+      /^(\s*)(?:#+\s*)?(?:Comment postuler|Modalit[ée]s de candidature|Dossier de candidature|Pour postuler|Pi[èe]ces [àa] fournir)\s*:?\s*$/gim,
+      "\n\n## Modalités de candidature\n\n"
+    )
+    .replace(
+      /^(\s*)(?:#+\s*)?(?:Comp[ée]tences|Exigences|Qualifications|Responsabilit[ée]s|T[âa]ches)\s*(?:requises?|du poste)?\s*:?\s*$/gim,
+      "\n\n## $2\n\n"
+    )
+
+    // Cas 2 : Titres collés au texte sur la même ligne (avec deux-points)
+    .replace(
+      /^(\s*)(?:#+\s*)?Conditions?\s*(?:d['’]embauche|du contrat|de travail)?\s*:\s*(.+)$/gim,
+      "\n\n## Conditions de travail\n\n$2"
+    )
+    .replace(
+      /^(\s*)(?:#+\s*)?(?:Comment postuler|Modalit[ée]s de candidature|Dossier de candidature|Pour postuler|Pi[èe]ces [àa] fournir)\s*:\s*(.+)$/gim,
+      "\n\n## Modalités de candidature\n\n$2"
+    )
+    .replace(
+      /^(\s*)(?:#+\s*)?Description\s*(?:du poste|de l['’]offre)?\s*:\s*(.+)$/gim,
+      "\n\n## Description du poste\n\n$2"
+    )
+    .replace(
+      /^(\s*)(?:#+\s*)?Missions?\s*(?:principales?|du poste)?\s*:\s*(.+)$/gim,
+      "\n\n## Missions principales\n\n$2"
+    )
+    .replace(
+      /^(\s*)(?:#+\s*)?Profil\s*(?:recherch[ée]|du candidat|exig[ée])?\s*:\s*(.+)$/gim,
+      "\n\n## Profil recherché\n\n$2"
+    )
+
+    // Cas 3 : Sans deux-points mais avec majuscule après (ex: "Conditions de travail Poste de...")
+    .replace(
+      /^(\s*)Conditions?\s*(?:d['’]embauche|du contrat|de travail)\s+([A-ZÀ-Ÿ].+)$/gim,
+      "\n\n## Conditions de travail\n\n$2"
+    )
+    .replace(
+      /^(\s*)Modalit[ée]s de candidature\s+([A-ZÀ-Ÿ].+)$/gim,
+      "\n\n## Modalités de candidature\n\n$2"
+    )
+    .replace(
+      /^(\s*)Missions?\s*(?:principales?|du poste)\s+([A-ZÀ-Ÿ].+)$/gim,
+      "\n\n## Missions principales\n\n$2"
+    )
+    .replace(
+      /^(\s*)Profil\s*(?:recherch[ée]|du candidat|exig[ée])\s+([A-ZÀ-Ÿ].+)$/gim,
+      "\n\n## Profil recherché\n\n$2"
     );
 
   return result.replace(/\n{3,}/g, "\n\n").trim();
