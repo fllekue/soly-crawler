@@ -539,26 +539,25 @@ async function callGeminiApi(apiKey, model, pageText, sourceUrl) {
 
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-  const prompt = `Tu es un bot expert en extraction d'offres d'emploi en Afrique de l'Ouest (Togo).
-Extrais les informations de l'offre d'emploi suivante.
-Retourne STRICTEMENT un objet JSON valide avec cette structure (sans backticks markdown \`\`\`json) :
+  const prompt = `Tu es un expert RH de haut niveau.
+Extrais STRICTEMENT l'offre d'emploi sous forme d'un objet JSON valide avec cette structure (sans backticks markdown \`\`\`json) :
 {
-  "title": "Titre du poste exact",
-  "company": "Nom de l'entreprise",
+  "title": "Titre du poste exact et épuré",
+  "company": "Nom réel de l'entreprise ou 'Entreprise confidentielle'",
   "location": "Lomé, Togo (ou Togo / Remote)",
-  "description": "Description exhaustive et détaillée avec missions et profil (Markdown)",
-  "summary": "Résumé de 2-3 phrases en français",
+  "description": "Rédige le corps COMPLET, EXHAUSTIF et PROFESSIONNEL de l'annonce en Markdown élégant (avec des sections Markdown ## Missions, ## Profil recherché, ## Conditions de travail, ## Modalités de candidature). Exclus STRICTEMENT tout lien de navigation, fil d'Ariane, vue(s), offres récentes, articles similaires ou publicité.",
+  "summary": "Résumé percutant de 2-3 phrases en français",
   "contractType": "CDI" | "CDD" | "Stage" | "Freelance" | "Alternance" | "Autre",
   "workMode": "office" | "hybrid" | "remote",
   "sector": "Tech" | "Finance" | "Commercial" | "RH" | "Santé" | "Marketing" | "Logistique" | "Éducation" | "BTP" | "Juridique" | "Agriculture" | "Hôtellerie" | "ONG" | "Design" | "Autre",
   "salary": "Salaire explicite ou null",
   "skills": ["Compétence 1", "Compétence 2"],
-  "applyUrl": "URL de candidature ou email ou téléphone",
+  "applyUrl": "URL de candidature, email ou téléphone",
   "howToApply": "Instructions précises de candidature"
 }
 
 Texte source (URL: ${sourceUrl}) :
-${pageText.slice(0, 20_000)}`;
+${pageText.slice(0, 15_000)}`;
 
   try {
     const res = await fetch(endpoint, {
@@ -648,22 +647,22 @@ async function parseWithGroq(
 
   const endpoint = "https://api.groq.com/openai/v1/chat/completions";
 
-  const prompt = `Tu es un expert RH. Extrais l'offre d'emploi sous forme d'un objet JSON strict avec :
+  const prompt = `Tu es un expert RH de haut niveau. Extrais l'offre d'emploi sous forme d'un objet JSON strict avec :
 - title: Titre exact du poste
-- company: Nom de l'entreprise ou 'Entreprise confidentielle'
+- company: Nom réel de l'entreprise ou 'Entreprise confidentielle'
 - location: Ville, Togo (ou Remote)
-- description: Corps exhaustif de l'annonce
-- summary: Résumé de 2-3 phrases en français
+- description: Rédige le corps COMPLET, EXHAUSTIF et PROFESSIONNEL de l'annonce en Markdown élégant (avec des sections Markdown ## Missions, ## Profil recherché, ## Conditions de travail, ## Modalités de candidature). Exclus STRICTEMENT tout lien de navigation, fil d'Ariane, vue(s), offres récentes, articles similaires ou publicité.
+- summary: Résumé percutant de 2-3 phrases en français
 - contractType: 'CDI' | 'CDD' | 'Stage' | 'Freelance' | 'Alternance' | 'Autre'
 - workMode: 'office' | 'hybrid' | 'remote'
 - sector: Secteur d'activité
 - skills: Liste de compétences requises
 - salary: Salaire ou null
-- applyUrl: Email, lien ou téléphone pour postuler
-- howToApply: Consignes pour postuler
+- applyUrl: Email, URL ou téléphone pour postuler
+- howToApply: Consignes précises pour postuler
 
 Texte (URL: ${sourceUrl}) :
-${pageText.slice(0, 8000)}`;
+${pageText.slice(0, 12_000)}`;
 
   let retries = 0;
   const maxRetries = 2;
@@ -778,7 +777,11 @@ async function extractJobWithAiCascade(detailText, jobUrl) {
     console.log(
       "[AI] ⚠️ Gemini failed or returned incomplete. Falling back to Groq 70B..."
     );
-    parsed = await parseWithGroq(detailText, jobUrl, "llama-3.3-70b-versatile");
+    parsed = await parseWithGroq(
+      detailText,
+      jobUrl,
+      "llama-3.3-70b-versatile"
+    );
   }
 
   if (!(parsed?.title && parsed?.company)) {
@@ -829,16 +832,11 @@ async function processJobCandidate(jobUrl) {
     location: parsed.location || "Togo",
   });
 
-  const fullDescription = extractCleanFullDescription(
-    detailText,
-    parsed.description
-  );
-
   const payload = {
     title: parsed.title,
     company: parsed.company,
     location: parsed.location || "Togo",
-    description: fullDescription || detailText.slice(0, 5000),
+    description: parsed.description || extractCleanFullDescription(detailText, parsed.description),
     summary: parsed.summary || parsed.title,
     contractType: normalizeContractType(parsed.contractType) || "CDI",
     workMode: normalizeWorkMode(parsed.workMode) || "office",
