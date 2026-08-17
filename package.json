@@ -1,0 +1,17 @@
+{
+  "name": "soly-crawler",
+  "version": "1.0.0",
+  "description": "Autonomous job crawler and ingestion engine for Soly",
+  "type": "module",
+  "main": "scrape.mjs",
+  "scripts": {
+    "start": "node scrape.mjs",
+    "dry-run": "node scrape.mjs --dry-run"
+  },
+  "keywords": ["scraper", "crawler", "jobs", "soly", "gemini", "groq", "telegram"],
+  "author": "Honoré EKUE",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

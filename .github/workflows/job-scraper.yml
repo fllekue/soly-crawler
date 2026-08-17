@@ -1,0 +1,56 @@
+name: Soly Autonomous Job Scraper
+
+on:
+  schedule:
+    # Exécution 4 fois par jour : 06h00, 11h00, 15h00, 19h00 UTC
+    - cron: '0 6,11,15,19 * * *'
+  workflow_dispatch: # Déclenchement manuel depuis l'interface GitHub
+
+concurrency:
+  group: soly-job-scraper
+  cancel-in-progress: false
+
+jobs:
+  scrape-and-ingest:
+    name: Run Scraper & Ingest to Soly
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Execute Autonomous Job Scraper
+        env:
+          APP_URL: ${{ secrets.APP_URL || 'https://soly.work' }}
+          SCRAPER_SECRET: ${{ secrets.SCRAPER_SECRET || secrets.SYNC_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_FALLBACK: ${{ secrets.GEMINI_API_KEY_FALLBACK }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL || 'gemini-flash-latest' }}
+          GEMINI_FALLBACK_MODEL: ${{ secrets.GEMINI_FALLBACK_MODEL || 'gemini-flash-lite-latest' }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          node scrape.mjs
+
+      - name: Telegram Failure Alert
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_ADMIN_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -H "Content-Type: application/json" \
+              -d "{\"chat_id\": \"${TELEGRAM_ADMIN_CHAT_ID}\", \"text\": \"🚨 <b>Soly Scraper Alert: Workflow Failed</b>\n\nLe scraper d'offres d'emploi a échoué.\n<a href='${RUN_URL}'>Voir les logs d'exécution</a>\", \"parse_mode\": \"HTML\"}"
+          fi
