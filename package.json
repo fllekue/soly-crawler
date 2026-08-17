@@ -8,6 +8,11 @@
     "start": "node scrape.mjs",
     "dry-run": "node scrape.mjs --dry-run"
   },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.5",
+    "turndown": "^7.2.0"
+  },
   "keywords": ["scraper", "crawler", "jobs", "soly", "gemini", "groq", "telegram"],
   "author": "Honoré EKUE",
   "license": "MIT",

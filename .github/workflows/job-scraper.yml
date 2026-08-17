@@ -27,6 +27,9 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install Dependencies
+        run: npm install
+
       - name: Execute Autonomous Job Scraper
         env:
           APP_URL: ${{ secrets.APP_URL || 'https://soly.work' }}

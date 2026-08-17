@@ -14,6 +14,14 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { load } from "cheerio";
+import TurndownService from "turndown";
+
+const turndown = new TurndownService({
+  headingStyle: "atx",
+  bulletListMarker: "-",
+  emDelimiter: "_",
+});
 
 // Auto-load .env.local / .env in local development
 const envPaths = [".env.local", ".env"];
@@ -131,14 +139,6 @@ const JSON_PREFIX_REGEX = /^```json\s*/i;
 const JSON_SUFFIX_REGEX = /\s*```$/i;
 const WWW_PREFIX_REGEX = /^www\./;
 
-const STOP_MARKERS_REGEX = [
-  /\n\s*Lire aussi\s*:/i,
-  /\n\s*######\s*\[EmploiTogo/i,
-  /\n\s*Partager cette offre\s*:/i,
-  /\n\s*À propos de l'auteur/i,
-  /\n\s*Autres offres similaires/i,
-];
-
 // Top-level regex constants for strict URL validation
 const JOBRELAIS_JOB_REGEX =
   /^\/opportunities\/(jobs|internship|call-for-tenders|competitions)\/[a-f0-9]{8,}-[a-z0-9-]+$/i;
@@ -146,10 +146,104 @@ const EMPLOITOGO_EXCLUSION_REGEX =
   /^\/(offres-emploi|espace-recruteurs|publier-une-offre|publier-une-offre-demploi|category|tag|author|page|a-propos|contact|mentions-legales|politique|feed|comments)(\/.*)?$/i;
 const EMPLOITOGO_JOB_REGEX =
   /\/(.*(recrute|recrutement|charge-de|avis-dappel|poste|assistant|directeur|ingenieur|commercial|stage|conducteur|responsable|comptable|juriste|consultant).*|\d{2}-\d{2}-\d{4})\/?$/i;
+const EMPLOITOGO_COM_DASH_REGEX = /-[a-z0-9]+/i;
 const ANPE_ROOT_REGEX = /^\/offres-demploi\/?$/i;
 const ANPE_NUM_PREFIX_REGEX = /\/\d+-/;
 const ANPE_JOB_REGEX_1 = /\/offres-demploi\/[a-z0-9-]+/i;
 const ANPE_JOB_REGEX_2 = /\/offres-emploi\/\d+-[a-z0-9-]+/i;
+const GENERIC_EXCLUSIONS_REGEX =
+  /\.(jpg|jpeg|png|gif|svg|css|js|woff|pdf|rss|xml)$/i;
+const GENERIC_BAD_PATHS_REGEX =
+  /^\/(login|connexion|register|inscription|contact|a-propos|about|mentions-legales|politique|terms|tag|category|author|feed|page)\/?/i;
+
+function isEmploiTogoComJobUrl(path) {
+  if (
+    path === "/" ||
+    path === "/listes-des-emplois" ||
+    path === "/listes-des-emplois/"
+  ) {
+    return false;
+  }
+  return (
+    path.length > 5 &&
+    (path.includes("/emploi") ||
+      path.includes("/job") ||
+      path.includes("/offres") ||
+      EMPLOITOGO_COM_DASH_REGEX.test(path))
+  );
+}
+
+function isAnpeJobUrl(path) {
+  if (
+    path === "/" ||
+    ANPE_ROOT_REGEX.test(path) ||
+    (path.includes("offres-emploi") && !ANPE_NUM_PREFIX_REGEX.test(path))
+  ) {
+    return false;
+  }
+  return (
+    ANPE_JOB_REGEX_1.test(path) ||
+    ANPE_JOB_REGEX_2.test(path) ||
+    path.includes("/offres/")
+  );
+}
+
+function isEmploiTgJobUrl(path) {
+  if (path === "/" || path.includes("/recherche-jobs")) {
+    return false;
+  }
+  return (
+    path.includes("/offre-emploi-") ||
+    path.includes("/job-offer-") ||
+    path.includes("/recrutement")
+  );
+}
+
+// Helper: Check if URL is a strictly valid job detail URL for each specific source
+function isStrictJobUrl(rawUrl, baseUrl) {
+  if (!rawUrl) {
+    return false;
+  }
+  try {
+    const parsed = new URL(rawUrl, baseUrl);
+    parsed.hash = "";
+    const path = parsed.pathname;
+    const host = parsed.hostname.replace(WWW_PREFIX_REGEX, "");
+
+    if (host.includes("jobrelais.com")) {
+      return JOBRELAIS_JOB_REGEX.test(path);
+    }
+    if (host.includes("emploitogo.info")) {
+      return (
+        path !== "/" &&
+        !EMPLOITOGO_EXCLUSION_REGEX.test(path) &&
+        EMPLOITOGO_JOB_REGEX.test(path)
+      );
+    }
+    if (host.includes("emploitogo.com")) {
+      return isEmploiTogoComJobUrl(path);
+    }
+    if (host.includes("anpetogo.org")) {
+      return isAnpeJobUrl(path);
+    }
+    if (host.includes("emploi.tg")) {
+      return isEmploiTgJobUrl(path);
+    }
+
+    if (
+      GENERIC_EXCLUSIONS_REGEX.test(path) ||
+      GENERIC_BAD_PATHS_REGEX.test(path) ||
+      path === "/" ||
+      path === ""
+    ) {
+      return false;
+    }
+
+    return path.split("/").filter(Boolean).length >= 1;
+  } catch {
+    return false;
+  }
+}
 
 // Pre-AI Structural Filter: verify page contains mandatory job announcement sections
 const JOB_MARKERS_REGEX = [
@@ -166,94 +260,6 @@ const JOB_MARKERS_REGEX = [
   /avis de recrutement/i,
   /recrute/i,
 ];
-
-// Helper: Check if URL is a strictly valid job detail URL for each specific source
-function isStrictJobUrl(rawUrl, baseUrl) {
-  if (!rawUrl) {
-    return false;
-  }
-  try {
-    const parsed = new URL(rawUrl, baseUrl);
-    parsed.hash = "";
-    const path = parsed.pathname;
-    const host = parsed.hostname.replace(WWW_PREFIX_REGEX, "");
-
-    // 1. Jobrelais Togo
-    if (host.includes("jobrelais.com")) {
-      return JOBRELAIS_JOB_REGEX.test(path);
-    }
-
-    // 2. Emploi Togo Info
-    if (host.includes("emploitogo.info")) {
-      if (path === "/" || EMPLOITOGO_EXCLUSION_REGEX.test(path)) {
-        return false;
-      }
-      return EMPLOITOGO_JOB_REGEX.test(path);
-    }
-
-    // 3. Emploi Togo (.com)
-    if (host.includes("emploitogo.com")) {
-      if (
-        path === "/" ||
-        path === "/listes-des-emplois" ||
-        path === "/listes-des-emplois/"
-      ) {
-        return false;
-      }
-      return (
-        path.length > 5 &&
-        (path.includes("/emploi") ||
-          path.includes("/job") ||
-          path.includes("/offres") ||
-          /-[a-z0-9]+/i.test(path))
-      );
-    }
-
-    // 4. ANPE Togo
-    if (host.includes("anpetogo.org")) {
-      if (
-        path === "/" ||
-        ANPE_ROOT_REGEX.test(path) ||
-        (path.includes("offres-emploi") && !ANPE_NUM_PREFIX_REGEX.test(path))
-      ) {
-        return false;
-      }
-      return (
-        ANPE_JOB_REGEX_1.test(path) ||
-        ANPE_JOB_REGEX_2.test(path) ||
-        path.includes("/offres/")
-      );
-    }
-
-    // 5. Emploi TG
-    if (host.includes("emploi.tg")) {
-      if (path === "/" || path.includes("/recherche-jobs")) {
-        return false;
-      }
-      return (
-        path.includes("/offre-emploi-") ||
-        path.includes("/job-offer-") ||
-        path.includes("/recrutement")
-      );
-    }
-
-    // 6. Generic / Custom sources added via Soly Dashboard
-    const genericExclusions =
-      /\.(jpg|jpeg|png|gif|svg|css|js|woff|pdf|rss|xml)$/i;
-    if (genericExclusions.test(path)) {
-      return false;
-    }
-    const genericBadPaths =
-      /^\/(login|connexion|register|inscription|contact|a-propos|about|mentions-legales|politique|terms|tag|category|author|feed|page)\/?/i;
-    if (genericBadPaths.test(path) || path === "/" || path === "") {
-      return false;
-    }
-
-    return path.split("/").filter(Boolean).length >= 1;
-  } catch {
-    return false;
-  }
-}
 
 // Helper: Pre-AI filter to verify page content contains real job posting structure
 function isValidJobPageContent(text) {
@@ -471,13 +477,139 @@ async function sendAdminAlert(message) {
 }
 
 // Helper: Fetch with Jina AI Reader + Direct Fallback
+const REMOVE_SELECTORS = [
+  "script",
+  "style",
+  "noscript",
+  "svg",
+  "canvas",
+  "iframe",
+  "form",
+  "button",
+  "input",
+  "textarea",
+  "select",
+  "nav",
+  "header",
+  "footer",
+  "aside",
+  ".header",
+  "#header",
+  ".footer",
+  "#footer",
+  ".sidebar",
+  "#sidebar",
+  ".menu",
+  "#menu",
+  ".nav",
+  "#nav",
+  ".navigation",
+  ".widget",
+  ".widgets",
+  ".social",
+  ".share",
+  ".share-buttons",
+  ".breadcrumb",
+  ".breadcrumbs",
+  ".pagination",
+  ".related",
+  ".similar-jobs",
+  ".similar-posts",
+  ".author-box",
+  ".banner",
+  ".cookie-notice",
+  ".popup",
+  ".modal",
+  ".ad",
+  ".ads",
+  "[role='navigation']",
+  "[role='banner']",
+  "[role='contentinfo']",
+  "[aria-label*='navigation' i]",
+].join(", ");
+
+const PRIMARY_SELECTORS = [
+  ".job-description",
+  ".job-details",
+  ".job_description",
+  ".entry-content",
+  ".post-content",
+  ".single-job-content",
+  ".offer-content",
+  ".offre-details",
+  ".item-page",
+  "article",
+  "main",
+  "[role='main']",
+];
+
+function extractUniversalJobContent(html) {
+  if (!html) {
+    return "";
+  }
+
+  const $ = load(html);
+  $(REMOVE_SELECTORS).remove();
+
+  let selectedHtml = "";
+  for (const selector of PRIMARY_SELECTORS) {
+    const el = $(selector);
+    if (el.length > 0) {
+      const textLen = el.text().trim().length;
+      if (textLen >= 150) {
+        selectedHtml = el.html() || "";
+        break;
+      }
+    }
+  }
+
+  if (!selectedHtml) {
+    selectedHtml = $("body").html() || "";
+  }
+
+  const markdown = turndown.turndown(selectedHtml);
+  return cleanJobDescription(markdown);
+}
+
+// Helper: Fetch page text via Direct Readability Fetch or Jina Reader Fallback
 async function fetchPageText(url) {
   console.log(`[Crawler] Fetching: ${url}`);
 
-  // 1. Try Jina Reader
+  // 1. Priorité au Direct Fetch local (rapide, sans bruit, 0 dépendance externe)
+  try {
+    const directRes = await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (directRes.ok) {
+      const html = await directRes.text();
+      const cleanMd = extractUniversalJobContent(html);
+      if (cleanMd && cleanMd.length >= 150) {
+        console.log(
+          `[Crawler] ✅ Direct Universal Readability success (${cleanMd.length} chars)`
+        );
+        return cleanMd;
+      }
+    }
+  } catch (err) {
+    console.log(
+      `[Crawler] Direct fetch failed for ${url}: ${err.message}. Trying Jina AI fallback.`
+    );
+  }
+
+  // 2. Fallback Jina Reader (si bloqué ou JavaScript dynamique)
   try {
     const jinaHeaders = {
       "x-respond-with": "markdown",
+      "x-remove-selector":
+        "nav, header, footer, .header, #header, .footer, #footer, .menu, #menu, .navigation, .widget_recent_entries, .social, .share, .share-buttons, .breadcrumb, .breadcrumbs, .pagination, .related, .similar-jobs, .author-box, .banner, .cookie-notice, .popup, .modal, .ad, .ads",
       "User-Agent": "Mozilla/5.0 (compatible; SolyBot/2.0; +https://soly.work)",
     };
     if (CONFIG.jinaApiKey) {
@@ -499,69 +631,140 @@ async function fetchPageText(url) {
         lower.includes("rate limited");
 
       if (!isError) {
-        console.log(`[Crawler] ✅ Jina AI success (${text.length} chars)`);
-        return text;
+        const cleanMd = cleanJobDescription(text);
+        console.log(`[Crawler] ✅ Jina AI success (${cleanMd.length} chars)`);
+        return cleanMd;
       }
     }
   } catch (err) {
-    console.log(
-      `[Crawler] Jina AI fetch failed for ${url}: ${err.message}. Falling back to direct fetch.`
-    );
-  }
-
-  // 2. Direct Fallback
-  try {
-    const directRes = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-      },
-      signal: AbortSignal.timeout(15_000),
-    });
-
-    if (directRes.ok) {
-      const html = await directRes.text();
-      console.log(`[Crawler] ✅ Direct fetch success (${html.length} chars)`);
-      return html;
-    }
-  } catch (err) {
-    console.error(`[Crawler] ❌ Direct fetch failed for ${url}:`, err.message);
+    console.log(`[Crawler] Jina AI fetch failed for ${url}: ${err.message}.`);
   }
 
   return "";
 }
 
-// Helper: Extract Clean Full Markdown announcement
-function extractCleanFullDescription(rawPageText, aiDescription) {
-  if (!rawPageText) {
-    return aiDescription || "";
+const RE_MARKDOWN_IMAGES = /!\[[^\]]*\](?:\([^)]*\))?/g;
+const RE_ADD_TO_ANY = /\[AddToAny\]\([^)]*\)/gi;
+const RE_MORE_LINKS = /\[More…\]\([^)]*\)/gi;
+const RE_TIME_COUNTERS = /(?:il y a \d+ (?:heures?|jours?|minutes?|mois))/gi;
+const RE_NAV_PREV_NEXT = /(?:Précédent|Suivant)\s+RECRUTEMENT[^\n]*/gi;
+const RE_COPYRIGHT = /©\s*\d{4}[^\n]*/gi;
+const RE_EMAIL_CLOAK =
+  /_?Cette adresse e-mail est protégée contre les robots spammeurs[^._\n]*[._]?/gi;
+const RE_JS_VISUALIZE =
+  /Vous devez activer le JavaScript pour la visualiser[._]*/gi;
+const RE_CONSULT_SITES =
+  /Cette annonce peut être consultée sur les sites[^\n]*/gi;
+const RE_FOOTER_LINKS =
+  /\*?\s*\[(?:Conditions d[’'']?Utilisation|Mentions l[ée]gales|Propri[ée]t[ée] Intellectuelle|Politique de confidentialit[ée]|Qui sommes-nous|FAQ|Contactez-nous)[^\]]*\]\([^)]*\)/gi;
+
+const STOP_MARKERS = [
+  /\n\s*(?:Offres?\s+d['’]emploi\s+similaires?|Articles?\s+similaires?|Autres?\s+offres?|Rejoignez\s+notre\s+cha[îi]ne|Partager\s+cette\s+offre|À\s+propos\s+de\s+l['’]auteur)/i,
+  /\n\s*(?:Accueil\s*\n\s*A\s*Propos\s*\n\s*Contact)/i,
+  /\n\s*La Totalité de nos opportunités/i,
+];
+
+const RE_JUNK_LINES = [
+  /^(?:La Totalité de nos opportunités|Accueil|A Propos|Contact|Espace Candidats|Candidats - Inscription|Recherche avancée|Dernières opportunités|Opportunités au TOGO|COTONOU|Région\s*:|Date d'expiration|Catégories\s*:|Type d'offre|Lieu du travail\s*:)/i,
+  /^(?:Emplois|Stages|Concours|Appel D'offres|Bourses D'études)\s*\(\d+\)/i,
+  /^Recevez les nouvelles opportunités par email/i,
+  /^Tous droits réservés/i,
+  /^Publiée le \d{1,2}\.\d{1,2}\.\d{4}/i,
+  /^Offre d'emploi Togo\s*:/i,
+  /^\*?\s*\[(?:Conditions|Mentions|Propriété|Politique)/i,
+  /^(?:Le Conseil International de la Croix-Rouge|Le Responsable du Développement)/i,
+];
+
+const START_MARKERS = [
+  /\n\s*(?:Description\s*:|Missions\s*:|Dans le cadre|L['’]Agence nationale|Nous recrutons|Nous recherchons|Société de la place)/i,
+  /^(?:Description\s*:|Missions\s*:|Dans le cadre|L['’]Agence nationale|Nous recrutons|Nous recherchons|Société de la place)/i,
+];
+
+function cleanJobDescription(rawDescription) {
+  if (!rawDescription) {
+    return "";
   }
 
-  let cleaned = rawPageText;
+  let text = rawDescription
+    .replace(RE_MARKDOWN_IMAGES, "")
+    .replace(RE_ADD_TO_ANY, "")
+    .replace(RE_MORE_LINKS, "")
+    .replace(RE_TIME_COUNTERS, "")
+    .replace(RE_NAV_PREV_NEXT, "")
+    .replace(RE_COPYRIGHT, "")
+    .replace(RE_EMAIL_CLOAK, "")
+    .replace(RE_JS_VISUALIZE, "")
+    .replace(RE_CONSULT_SITES, "")
+    .replace(RE_FOOTER_LINKS, "");
 
-  // 1. If fetched via Jina, strip Jina meta headers
-  const jinaIdx = cleaned.indexOf("Markdown Content:");
-  if (jinaIdx !== -1) {
-    cleaned = cleaned.slice(jinaIdx + "Markdown Content:".length).trim();
-  }
-
-  // 2. Strip standard bottom widgets/footers
-  for (const marker of STOP_MARKERS_REGEX) {
-    const match = cleaned.match(marker);
-    if (match && match.index !== undefined && match.index > 250) {
-      cleaned = cleaned.slice(0, match.index).trim();
+  for (const marker of STOP_MARKERS) {
+    const match = text.match(marker);
+    if (match && match.index !== undefined && match.index > 150) {
+      text = text.slice(0, match.index).trim();
     }
   }
 
-  // 3. If the cleaned markdown is rich and contains substantive detail, preserve it
-  if (cleaned.length > 300) {
-    return cleaned;
+  for (const startMarker of START_MARKERS) {
+    const match = text.match(startMarker);
+    if (
+      match &&
+      match.index !== undefined &&
+      match.index > 0 &&
+      match.index < 800
+    ) {
+      text = text.slice(match.index).trim();
+      break;
+    }
   }
 
-  return aiDescription || cleaned;
+  const lines = text.split("\n");
+  const filteredLines = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      filteredLines.push("");
+      continue;
+    }
+    const isJunk = RE_JUNK_LINES.some((re) => re.test(trimmed));
+    if (!isJunk) {
+      filteredLines.push(line);
+    }
+  }
+
+  let result = filteredLines.join("\n").trim();
+
+  result = result
+    .replace(/^(?:#+\s*)?Description\s*:\s*/gim, "## Description du poste\n\n")
+    .replace(
+      /^(?:#+\s*)?Missions?\s*(?:principales?|du poste)?\s*:\s*/gim,
+      "## Missions principales\n\n"
+    )
+    .replace(
+      /^(?:#+\s*)?Profil\s*(?:recherch[ée]|du candidat)?\s*:\s*/gim,
+      "## Profil recherché\n\n"
+    )
+    .replace(
+      /^(?:#+\s*)?Conditions?\s*(?:d['’]embauche|du contrat|de travail)?\s*:\s*/gim,
+      "## Conditions de travail\n\n"
+    )
+    .replace(
+      /^(?:#+\s*)?(?:Comment postuler|Modalit[ée]s de candidature|Dossier de candidature)\s*:\s*/gim,
+      "## Modalités de candidature\n\n"
+    );
+
+  return result.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// Helper: Extract Clean Full Markdown announcement
+function extractCleanFullDescription(rawPageText, aiDescription) {
+  if (aiDescription && aiDescription.length > 80) {
+    return cleanJobDescription(aiDescription);
+  }
+  if (!rawPageText) {
+    return aiDescription || "";
+  }
+  return cleanJobDescription(rawPageText);
 }
 
 // Helper: Extract URLs matching job patterns
@@ -622,22 +825,26 @@ async function callGeminiApi(apiKey, model, pageText, sourceUrl) {
 
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-  const prompt = `Tu es un expert RH de haut niveau.
+  const prompt = `Tu es un extracteur RH de précision spécialisé dans la structuration d'offres d'emploi.
 Extrais STRICTEMENT l'offre d'emploi sous forme d'un objet JSON valide avec cette structure (sans backticks markdown \`\`\`json) :
 {
-  "title": "Titre du poste exact et épuré",
+  "title": "Titre exact du poste",
   "company": "Nom réel de l'entreprise ou 'Entreprise confidentielle'",
   "location": "Lomé, Togo (ou Togo / Remote)",
-  "description": "Rédige le corps COMPLET, EXHAUSTIF et PROFESSIONNEL de l'annonce en Markdown élégant (avec des sections Markdown ## Missions, ## Profil recherché, ## Conditions de travail, ## Modalités de candidature). Exclus STRICTEMENT tout lien de navigation, fil d'Ariane, vue(s), offres récentes, articles similaires ou publicité.",
-  "summary": "Résumé percutant de 2-3 phrases en français",
+  "description": "Corps complet et fidèle de l'annonce structuré en Markdown pur (avec titres ## Missions, ## Profil recherché, ## Conditions de travail, ## Modalités de candidature). Exclus strictement toute image, pub, navigation ou footer.",
+  "summary": "Résumé factuel de 2-3 phrases en français",
   "contractType": "CDI" | "CDD" | "Stage" | "Freelance" | "Alternance" | "Autre",
   "workMode": "office" | "hybrid" | "remote",
   "sector": "Tech" | "Finance" | "Commercial" | "RH" | "Santé" | "Marketing" | "Logistique" | "Éducation" | "BTP" | "Juridique" | "Agriculture" | "Hôtellerie" | "ONG" | "Design" | "Autre",
-  "salary": "Salaire explicite ou null",
+  "salary": "Salaire explicite uniquement ou null (NE JAMAIS INVENTER OU ESTIMER DE SALAIRE)",
   "skills": ["Compétence 1", "Compétence 2"],
   "applyUrl": "URL de candidature, email ou téléphone",
   "howToApply": "Instructions précises de candidature"
 }
+
+RÈGLES DE FIDÉLITÉ STRICTE :
+- ZÉRO INVENTION DE SALAIRE : Si aucun montant n'est écrit dans le texte, mets STRICTEMENT salary: null.
+- ZÉRO COMMENTAIRE IA : Aucun ajout personnel ou introduction artificielle.
 
 Texte source (URL: ${sourceUrl}) :
 ${pageText.slice(0, 15_000)}`;
@@ -860,11 +1067,7 @@ async function extractJobWithAiCascade(detailText, jobUrl) {
     console.log(
       "[AI] ⚠️ Gemini failed or returned incomplete. Falling back to Groq 70B..."
     );
-    parsed = await parseWithGroq(
-      detailText,
-      jobUrl,
-      "llama-3.3-70b-versatile"
-    );
+    parsed = await parseWithGroq(detailText, jobUrl, "llama-3.3-70b-versatile");
   }
 
   if (!(parsed?.title && parsed?.company)) {
@@ -919,7 +1122,9 @@ async function processJobCandidate(jobUrl) {
     title: parsed.title,
     company: parsed.company,
     location: parsed.location || "Togo",
-    description: parsed.description || extractCleanFullDescription(detailText, parsed.description),
+    description:
+      parsed.description ||
+      extractCleanFullDescription(detailText, parsed.description),
     summary: parsed.summary || parsed.title,
     contractType: normalizeContractType(parsed.contractType) || "CDI",
     workMode: normalizeWorkMode(parsed.workMode) || "office",
