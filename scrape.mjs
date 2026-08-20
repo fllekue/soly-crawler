@@ -11,7 +11,6 @@
  * 5. Notifies Telegram Admin on unexpected failure
  */
 
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { load } from "cheerio";
@@ -115,6 +114,19 @@ async function loadTargetSources() {
 
       if (res.ok) {
         const data = await res.json();
+
+        // Check if founder paused the crawler from Back-Office
+        if (
+          data.schedule?.isPaused &&
+          !process.argv.includes("--force") &&
+          !process.argv.includes("--dry-run")
+        ) {
+          console.log(
+            "[Schedule] ⏸️ Scraper is paused in Soly Back-Office settings. Exiting cleanly."
+          );
+          process.exit(0);
+        }
+
         if (Array.isArray(data.sources) && data.sources.length > 0) {
           console.log(
             `[Sources] 🔗 Dynamically synchronized ${data.sources.length} active sources from Soly Back-Office.`
@@ -374,27 +386,24 @@ function isValidExtractedJob(parsed) {
 // Helper: Sleep
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Helper: Generate Deterministic Fingerprint
+// Helper: Generate Deterministic Canonical Fingerprint
+function normalizeIdentityString(str) {
+  if (!str) {
+    return "";
+  }
+  return str
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "")
+    .trim();
+}
+
 function generateFingerprint({ title, company, location }) {
-  const normTitle = (title || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]/g, "");
-  const normCompany = (company || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]/g, "");
-  const normLocation = (location || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]/g, "");
-  return crypto
-    .createHash("sha256")
-    .update(`${normTitle}|${normCompany}|${normLocation}`)
-    .digest("hex");
+  const normTitle = normalizeIdentityString(title);
+  const normCompany = normalizeIdentityString(company);
+  const normLocation = normalizeIdentityString(location || "togo");
+  return `fp_${normTitle.slice(0, 32)}_${normCompany.slice(0, 32)}_${normLocation.slice(0, 16)}`;
 }
 
 function normalizeContractType(val) {
