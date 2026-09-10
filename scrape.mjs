@@ -71,6 +71,8 @@ const CONFIG = {
   geminiFallbackModel:
     process.env.GEMINI_FALLBACK_MODEL || "gemini-flash-lite-latest",
   groqModel: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
+  groqFallbackModel: process.env.GROQ_FALLBACK_MODEL || "llama-3.1-8b-instant",
+  geminiTimeoutMs: 35_000,
   maxUrlsPerSource: 5,
   delayBetweenAiCallsMs: 3500,
 };
@@ -95,6 +97,11 @@ const DEFAULT_SOURCES = [
   {
     name: "ANPE Togo",
     url: "https://anpetogo.org/offres-demploi/",
+    type: "html",
+  },
+  {
+    name: "RMO Job Center Togo",
+    url: "https://www.rmo-jobcenter.com/fr/togo/offres-emploi.html",
     type: "html",
   },
 ];
@@ -211,6 +218,16 @@ function isEmploiTgJobUrl(path) {
   );
 }
 
+const RMO_JOB_REGEX =
+  /^\/fr\/togo\/offres-emploi\/[^/]+\/\d+-[a-z0-9-]+\.html$/i;
+const RE_RMO_DUPLICATE_PREFIX = /^\/fr\/togo\/fr\/togo\//i;
+const RE_BASE_TAG = /<base\s+[^>]*href=["']([^"']+)["']/i;
+
+function isRmoJobUrl(path) {
+  const normalized = path.replace(RE_RMO_DUPLICATE_PREFIX, "/fr/togo/");
+  return RMO_JOB_REGEX.test(normalized);
+}
+
 // Helper: Check if URL is a strictly valid job detail URL for each specific source
 function isStrictJobUrl(rawUrl, baseUrl) {
   if (!rawUrl) {
@@ -240,6 +257,9 @@ function isStrictJobUrl(rawUrl, baseUrl) {
     }
     if (host.includes("emploi.tg")) {
       return isEmploiTgJobUrl(path);
+    }
+    if (host.includes("rmo-jobcenter.com")) {
+      return isRmoJobUrl(path);
     }
 
     if (
@@ -829,12 +849,23 @@ function extractJobUrls(content, baseUrl) {
   const found = new Set();
   const baseHostname = new URL(baseUrl).hostname.replace(WWW_PREFIX_REGEX, "");
 
+  // Prise en charge de la balise <base href="..."> si présente (ex: RMO Jobcenter)
+  let effectiveBaseUrl = baseUrl;
+  const baseMatch = content.match(RE_BASE_TAG);
+  if (baseMatch) {
+    try {
+      effectiveBaseUrl = new URL(baseMatch[1], baseUrl).href;
+    } catch {
+      // Ignore et conserve baseUrl par défaut
+    }
+  }
+
   function processCandidateUrl(rawUrl) {
     if (!rawUrl) {
       return;
     }
     try {
-      const parsed = new URL(rawUrl, baseUrl);
+      const parsed = new URL(rawUrl, effectiveBaseUrl);
       parsed.hash = "";
       const cleaned = parsed.href;
       const candidateHostname = parsed.hostname.replace(WWW_PREFIX_REGEX, "");
@@ -917,7 +948,7 @@ ${pageText.slice(0, 15_000)}`;
           temperature: 0.1,
         },
       }),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(CONFIG.geminiTimeoutMs || 35_000),
     });
 
     if (res.status === 429) {
@@ -1115,23 +1146,23 @@ async function ingestJobToSoly(jobData) {
   }
 }
 
-// Sequential AI Extraction Cascade (Gemini Primary/Fallback -> Groq 70B -> Groq 8B)
+// Sequential AI Extraction Cascade (Gemini Primary/Fallback -> Groq Primary -> Groq Fallback)
 async function extractJobWithAiCascade(detailText, jobUrl) {
   console.log("[AI] Parsing job with Gemini (Primary / Fallback)...");
   let parsed = await parseWithGemini(detailText, jobUrl);
 
-  if (!(parsed?.title && parsed?.company)) {
+  if (!(parsed?.title && parsed?.company) && CONFIG.groqModel) {
     console.log(
-      "[AI] ⚠️ Gemini failed or returned incomplete. Falling back to Groq 70B..."
+      `[AI] ⚠️ Gemini failed or returned incomplete. Falling back to Groq (${CONFIG.groqModel})...`
     );
-    parsed = await parseWithGroq(detailText, jobUrl, "llama-3.3-70b-versatile");
+    parsed = await parseWithGroq(detailText, jobUrl, CONFIG.groqModel);
   }
 
-  if (!(parsed?.title && parsed?.company)) {
+  if (!(parsed?.title && parsed?.company) && CONFIG.groqFallbackModel) {
     console.log(
-      "[AI] ⚠️ Groq 70B failed or returned incomplete. Falling back to Groq 8B..."
+      `[AI] ⚠️ Groq primary failed. Falling back to Groq backup (${CONFIG.groqFallbackModel})...`
     );
-    parsed = await parseWithGroq(detailText, jobUrl, "llama-3.1-8b-instant");
+    parsed = await parseWithGroq(detailText, jobUrl, CONFIG.groqFallbackModel);
   }
 
   return parsed;
