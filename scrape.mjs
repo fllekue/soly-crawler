@@ -104,6 +104,11 @@ const DEFAULT_SOURCES = [
     url: "https://www.rmo-jobcenter.com/fr/togo/offres-emploi.html",
     type: "html",
   },
+  {
+    name: "Emploi.tg",
+    url: "https://www.emploi.tg/recherche-jobs-togo",
+    type: "html",
+  },
 ];
 
 // Helper: Dynamically fetch active sources configured in Soly Back-Office
@@ -657,6 +662,9 @@ async function fetchPageText(url) {
         text.length < 150 ||
         lower.includes("403 forbidden") ||
         lower.includes("blocked by cloudflare") ||
+        lower.includes("just a moment") ||
+        lower.includes("enable javascript and cookies") ||
+        lower.includes("requiring captcha") ||
         lower.includes("rate limited");
 
       if (!isError) {
