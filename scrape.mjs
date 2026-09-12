@@ -96,7 +96,7 @@ const DEFAULT_SOURCES = [
   },
   {
     name: "ANPE Togo",
-    url: "https://anpetogo.org/offres-demploi/",
+    url: "https://anpetogo.org/index.php/fr-fr/offres/offres-emploi",
     type: "html",
   },
   {
@@ -111,51 +111,88 @@ const DEFAULT_SOURCES = [
   },
 ];
 
-// Helper: Dynamically fetch active sources configured in Soly Back-Office
-async function loadTargetSources() {
-  if (CONFIG.appUrl) {
-    try {
-      const endpoint = `${CONFIG.appUrl}/api/v1/jobs/sources?key=${encodeURIComponent(CONFIG.scraperSecret)}`;
-      const res = await fetch(endpoint, {
-        headers: {
-          "x-scraper-secret": CONFIG.scraperSecret,
-          Authorization: `Bearer ${CONFIG.scraperSecret}`,
-        },
-        signal: AbortSignal.timeout(8000),
-      });
+function normalizeSourceListingUrl(rawUrl) {
+  if (!rawUrl) {
+    return rawUrl;
+  }
+  const url = rawUrl.trim();
+  if (url.includes("anpetogo.org/offres-demploi")) {
+    return "https://anpetogo.org/index.php/fr-fr/offres/offres-emploi";
+  }
+  if (url.includes("emploitogo.com/category/offres-d-emploi")) {
+    return "https://emploitogo.com/listes-des-emplois/";
+  }
+  return url;
+}
 
-      if (res.ok) {
-        const data = await res.json();
-
-        // Check if founder paused the crawler from Back-Office
-        if (
-          data.schedule?.isPaused &&
-          !process.argv.includes("--force") &&
-          !process.argv.includes("--dry-run")
-        ) {
-          console.log(
-            "[Schedule] ⏸️ Scraper is paused in Soly Back-Office settings. Exiting cleanly."
-          );
-          process.exit(0);
-        }
-
-        if (Array.isArray(data.sources) && data.sources.length > 0) {
-          console.log(
-            `[Sources] 🔗 Dynamically synchronized ${data.sources.length} active sources from Soly Back-Office.`
-          );
-          return data.sources.map((s) => ({
-            name: s.name,
-            url: s.url,
-            type: "html",
-          }));
-        }
-      }
-    } catch (err) {
-      console.warn(
-        `[Sources] ⚠️ Could not fetch dynamic sources from ${CONFIG.appUrl} (${err.message}). Using fallback sources.`
-      );
+function mergeDefaultSources(dynamicSources) {
+  const result = [...dynamicSources];
+  for (const defSource of DEFAULT_SOURCES) {
+    const defHost = new URL(defSource.url).hostname.replace(
+      WWW_PREFIX_REGEX,
+      ""
+    );
+    const exists = result.some(
+      (ds) => new URL(ds.url).hostname.replace(WWW_PREFIX_REGEX, "") === defHost
+    );
+    if (!exists) {
+      result.push(defSource);
     }
   }
+  return result;
+}
+
+// Helper: Dynamically fetch active sources configured in Soly Back-Office
+async function loadTargetSources() {
+  if (!CONFIG.appUrl) {
+    return DEFAULT_SOURCES;
+  }
+
+  try {
+    const endpoint = `${CONFIG.appUrl}/api/v1/jobs/sources?key=${encodeURIComponent(CONFIG.scraperSecret)}`;
+    const res = await fetch(endpoint, {
+      headers: {
+        "x-scraper-secret": CONFIG.scraperSecret,
+        Authorization: `Bearer ${CONFIG.scraperSecret}`,
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+
+      // Check if founder paused the crawler from Back-Office
+      if (
+        data.schedule?.isPaused &&
+        !process.argv.includes("--force") &&
+        !process.argv.includes("--dry-run")
+      ) {
+        console.log(
+          "[Schedule] ⏸️ Scraper is paused in Soly Back-Office settings. Exiting cleanly."
+        );
+        process.exit(0);
+      }
+
+      if (Array.isArray(data.sources) && data.sources.length > 0) {
+        const dynamicSources = data.sources.map((s) => ({
+          name: s.name,
+          url: normalizeSourceListingUrl(s.url),
+          type: "html",
+        }));
+
+        const merged = mergeDefaultSources(dynamicSources);
+        console.log(
+          `[Sources] 🔗 Dynamically synchronized ${merged.length} active sources from Soly Back-Office.`
+        );
+        return merged;
+      }
+    }
+  } catch (err) {
+    console.warn(
+      `[Sources] ⚠️ Could not fetch dynamic sources from ${CONFIG.appUrl} (${err.message}). Using fallback sources.`
+    );
+  }
+
   return DEFAULT_SOURCES;
 }
 
@@ -165,13 +202,13 @@ const WWW_PREFIX_REGEX = /^www\./;
 
 // Top-level regex constants for strict URL validation
 const JOBRELAIS_JOB_REGEX =
-  /^\/opportunities\/(jobs|internship|call-for-tenders|competitions)\/[a-f0-9]{8,}-[a-z0-9-]+$/i;
+  /^\/opportunities\/(jobs|internship|call-for-tenders|competitions)\/[a-z0-9-]+$/i;
 const EMPLOITOGO_EXCLUSION_REGEX =
   /^\/(offres-emploi|espace-recruteurs|publier-une-offre|publier-une-offre-demploi|category|tag|author|page|a-propos|contact|mentions-legales|politique|feed|comments)(\/.*)?$/i;
 const EMPLOITOGO_JOB_REGEX =
   /\/(.*(recrute|recrutement|charge-de|avis-dappel|poste|assistant|directeur|ingenieur|commercial|stage|conducteur|responsable|comptable|juriste|consultant).*|\d{2}-\d{2}-\d{4})\/?$/i;
 const EMPLOITOGO_COM_DASH_REGEX = /-[a-z0-9]+/i;
-const ANPE_ROOT_REGEX = /^\/offres-demploi\/?$/i;
+const ANPE_ROOT_REGEX = /^\/(index\.php\/[a-z-]+)?\/?offres-d?emploi\/?$/i;
 const ANPE_NUM_PREFIX_REGEX = /\/\d+-/;
 const ANPE_JOB_REGEX_1 = /\/offres-demploi\/[a-z0-9-]+/i;
 const ANPE_JOB_REGEX_2 = /\/offres-emploi\/\d+-[a-z0-9-]+/i;
@@ -180,11 +217,28 @@ const GENERIC_EXCLUSIONS_REGEX =
 const GENERIC_BAD_PATHS_REGEX =
   /^\/(login|connexion|register|inscription|contact|a-propos|about|mentions-legales|politique|terms|tag|category|author|feed|page)\/?/i;
 
+function isJobrelaisJobUrl(path) {
+  if (
+    path.includes("/pays/") ||
+    path.endsWith("/create") ||
+    path === "/opportunities/jobs" ||
+    path === "/opportunities/jobs/" ||
+    path === "/opportunities/internship" ||
+    path === "/opportunities/competitions" ||
+    path === "/opportunities/call-for-tenders" ||
+    path === "/opportunities/scholarship"
+  ) {
+    return false;
+  }
+  return JOBRELAIS_JOB_REGEX.test(path);
+}
+
 function isEmploiTogoComJobUrl(path) {
   if (
     path === "/" ||
     path === "/listes-des-emplois" ||
-    path === "/listes-des-emplois/"
+    path === "/listes-des-emplois/" ||
+    path.startsWith("/dashboard-page")
   ) {
     return false;
   }
@@ -201,14 +255,16 @@ function isAnpeJobUrl(path) {
   if (
     path === "/" ||
     ANPE_ROOT_REGEX.test(path) ||
-    (path.includes("offres-emploi") && !ANPE_NUM_PREFIX_REGEX.test(path))
+    path.endsWith("/offres-emploi") ||
+    path.endsWith("/offres-emploi/") ||
+    !ANPE_NUM_PREFIX_REGEX.test(path)
   ) {
     return false;
   }
   return (
     ANPE_JOB_REGEX_1.test(path) ||
     ANPE_JOB_REGEX_2.test(path) ||
-    path.includes("/offres/")
+    path.includes("/offres-emploi/")
   );
 }
 
@@ -245,7 +301,7 @@ function isStrictJobUrl(rawUrl, baseUrl) {
     const host = parsed.hostname.replace(WWW_PREFIX_REGEX, "");
 
     if (host.includes("jobrelais.com")) {
-      return JOBRELAIS_JOB_REGEX.test(path);
+      return isJobrelaisJobUrl(path);
     }
     if (host.includes("emploitogo.info")) {
       return (
@@ -852,7 +908,7 @@ function extractCleanFullDescription(rawPageText, aiDescription) {
   return cleanJobDescription(rawPageText);
 }
 
-// Helper: Extract URLs matching job patterns
+// Helper: Extract URLs matching job patterns from HTML or text/markdown content
 function extractJobUrls(content, baseUrl) {
   const found = new Set();
   const baseHostname = new URL(baseUrl).hostname.replace(WWW_PREFIX_REGEX, "");
@@ -898,8 +954,8 @@ function extractJobUrls(content, baseUrl) {
     processCandidateUrl(match[1]);
   }
 
-  // 2. Regex parsing for Markdown links: [title](url)
-  const mdRegex = /\[([^\]]*?)\]\((https?:\/\/[^\s)]+)\)/g;
+  // 2. Regex parsing for Markdown links: [title](url) - captures both relative and absolute links
+  const mdRegex = /\[([^\]]*?)\]\(([^\s)]+)\)/g;
   for (const match of content.matchAll(mdRegex)) {
     processCandidateUrl(match[2]);
   }
@@ -908,6 +964,127 @@ function extractJobUrls(content, baseUrl) {
   const rawUrlRegex = /(https?:\/\/[^\s)>]+)/g;
   for (const match of content.matchAll(rawUrlRegex)) {
     processCandidateUrl(match[1]);
+  }
+
+  return Array.from(found).slice(0, CONFIG.maxUrlsPerSource);
+}
+
+// Helper: Fetch source listing catalog and extract job candidate URLs from raw HTML (with Jina fallback)
+async function fetchSourceJobUrls(sourceUrl) {
+  const found = new Set();
+  const baseHostname = new URL(sourceUrl).hostname.replace(
+    WWW_PREFIX_REGEX,
+    ""
+  );
+
+  console.log(`[Crawler] Fetching listing: ${sourceUrl}`);
+
+  // 1. Direct HTML fetch (preserves entire DOM tree without premature Markdown reduction)
+  let rawHtml = "";
+  try {
+    const directRes = await fetch(sourceUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (directRes.ok) {
+      rawHtml = await directRes.text();
+    }
+  } catch (err) {
+    console.log(
+      `[Crawler] Direct listing fetch failed for ${sourceUrl}: ${err.message}. Trying Jina fallback.`
+    );
+  }
+
+  const lowerHtml = rawHtml.toLowerCase();
+  const isBlocked =
+    rawHtml.length < 200 ||
+    lowerHtml.includes("403 forbidden") ||
+    lowerHtml.includes("blocked by cloudflare") ||
+    lowerHtml.includes("just a moment") ||
+    lowerHtml.includes("enable javascript and cookies") ||
+    lowerHtml.includes("requiring captcha");
+
+  if (rawHtml && !isBlocked) {
+    const $ = load(rawHtml);
+
+    // Detect <base href="..."> if present in HTML head (e.g. RMO Jobcenter)
+    let effectiveBaseUrl = sourceUrl;
+    const baseHref = $("base[href]").attr("href");
+    if (baseHref) {
+      try {
+        effectiveBaseUrl = new URL(baseHref, sourceUrl).href;
+      } catch {
+        // Keep sourceUrl by default
+      }
+    }
+
+    $("a[href]").each((_, el) => {
+      const rawUrl = $(el).attr("href");
+      if (!rawUrl) {
+        return;
+      }
+      try {
+        const parsed = new URL(rawUrl, effectiveBaseUrl);
+        parsed.hash = "";
+        const cleaned = parsed.href;
+        const candidateHostname = parsed.hostname.replace(WWW_PREFIX_REGEX, "");
+
+        if (candidateHostname !== baseHostname) {
+          return;
+        }
+
+        if (isStrictJobUrl(cleaned, sourceUrl)) {
+          found.add(cleaned);
+        }
+      } catch {
+        // Ignore invalid URL
+      }
+    });
+
+    if (found.size > 0) {
+      console.log(
+        `[Crawler] ✅ Direct HTML listing extraction success (${found.size} URLs found)`
+      );
+      return Array.from(found).slice(0, CONFIG.maxUrlsPerSource);
+    }
+  }
+
+  // 2. Fallback to Jina AI Reader if direct HTML had 0 URLs or failed
+  console.log(
+    `[Crawler] Falling back to Jina Reader for listing ${sourceUrl}...`
+  );
+  try {
+    const jinaHeaders = {
+      "x-respond-with": "markdown",
+      "User-Agent": "Mozilla/5.0 (compatible; SolyBot/2.0; +https://soly.work)",
+    };
+    if (CONFIG.jinaApiKey) {
+      jinaHeaders.Authorization = `Bearer ${CONFIG.jinaApiKey}`;
+    }
+
+    const jinaRes = await fetch(`https://r.jina.ai/${sourceUrl}`, {
+      headers: jinaHeaders,
+      signal: AbortSignal.timeout(25_000),
+    });
+
+    if (jinaRes.ok) {
+      const markdown = await jinaRes.text();
+      const urlsFromMd = extractJobUrls(markdown, sourceUrl);
+      for (const u of urlsFromMd) {
+        found.add(u);
+      }
+    }
+  } catch (err) {
+    console.log(
+      `[Crawler] Jina listing fallback failed for ${sourceUrl}: ${err.message}`
+    );
   }
 
   return Array.from(found).slice(0, CONFIG.maxUrlsPerSource);
@@ -1237,6 +1414,67 @@ async function processJobCandidate(jobUrl) {
   return { payload, ingestRes };
 }
 
+// Process a batch of candidate URLs for a single source
+async function processSourceBatch(source, errors) {
+  console.log(`\n--- Scanning Source: ${source.name} ---`);
+  const jobUrls = await fetchSourceJobUrls(source.url);
+  console.log(
+    `[Scan] Found ${jobUrls.length} potential job URLs for ${source.name}.`
+  );
+
+  let newCount = 0;
+  let dupCount = 0;
+  let extractedCount = 0;
+
+  for (const jobUrl of jobUrls) {
+    try {
+      const result = await processJobCandidate(jobUrl);
+      if (result) {
+        extractedCount++;
+        if (result.ingestRes?.isNew) {
+          newCount++;
+          console.log(
+            `[Ingest] ✨ New job created & queued: "${result.payload.title}" (ID: ${result.ingestRes.jobId})`
+          );
+        } else {
+          dupCount++;
+          console.log(
+            `[Ingest] 🔁 Duplicate skipped: "${result.payload.title}"`
+          );
+        }
+      }
+    } catch (err) {
+      errors.push(`${jobUrl}: ${err.message}`);
+    }
+
+    // Pause between AI calls to respect RPM/TPM
+    await sleep(CONFIG.delayBetweenAiCallsMs);
+  }
+
+  return {
+    discovered: jobUrls.length,
+    extracted: extractedCount,
+    newCount,
+    dupCount,
+  };
+}
+
+function printSourceBreakdown(sourceStats) {
+  console.log("--------------------------------------------------");
+  console.log("📋 Per-Source Breakdown:");
+  for (const s of sourceStats) {
+    let statusIcon = "🔁";
+    if (s.discovered === 0) {
+      statusIcon = "⚠️";
+    } else if (s.new > 0) {
+      statusIcon = "✨";
+    }
+    console.log(
+      `  ${statusIcon} ${s.name.padEnd(24)}: ${s.discovered} found | ${s.new} new | ${s.duplicates} dup`
+    );
+  }
+}
+
 // Main Runner
 async function main() {
   console.log("==================================================");
@@ -1254,43 +1492,21 @@ async function main() {
   const errors = [];
 
   const activeSources = await loadTargetSources();
+  const sourceStats = [];
 
   for (const source of activeSources) {
-    console.log(`\n--- Scanning Source: ${source.name} ---`);
-    const pageContent = await fetchPageText(source.url);
-    if (!pageContent) {
-      console.warn(`[Scan] ⚠️ Could not fetch source: ${source.name}`);
-      continue;
-    }
+    const stats = await processSourceBatch(source, errors);
+    totalDiscoveredUrls += stats.discovered;
+    totalExtracted += stats.extracted;
+    totalIngestedNew += stats.newCount;
+    totalDuplicates += stats.dupCount;
 
-    const jobUrls = extractJobUrls(pageContent, source.url);
-    console.log(`[Scan] Found ${jobUrls.length} potential job URLs.`);
-    totalDiscoveredUrls += jobUrls.length;
-
-    for (const jobUrl of jobUrls) {
-      try {
-        const result = await processJobCandidate(jobUrl);
-        if (result) {
-          totalExtracted++;
-          if (result.ingestRes?.isNew) {
-            totalIngestedNew++;
-            console.log(
-              `[Ingest] ✨ New job created & queued: "${result.payload.title}" (ID: ${result.ingestRes.jobId})`
-            );
-          } else {
-            totalDuplicates++;
-            console.log(
-              `[Ingest] 🔁 Duplicate skipped: "${result.payload.title}"`
-            );
-          }
-        }
-      } catch (err) {
-        errors.push(`${jobUrl}: ${err.message}`);
-      }
-
-      // Pause between AI calls to respect RPM/TPM
-      await sleep(CONFIG.delayBetweenAiCallsMs);
-    }
+    sourceStats.push({
+      name: source.name,
+      discovered: stats.discovered,
+      new: stats.newCount,
+      duplicates: stats.dupCount,
+    });
   }
 
   const durationSec = Math.round((Date.now() - startTime) / 1000);
@@ -1302,6 +1518,7 @@ async function main() {
   console.log(`New Ingested     : ${totalIngestedNew}`);
   console.log(`Duplicates       : ${totalDuplicates}`);
   console.log(`Errors           : ${errors.length}`);
+  printSourceBreakdown(sourceStats);
   console.log("==================================================");
 
   if (errors.length > 0 && totalIngestedNew === 0 && totalExtracted === 0) {
